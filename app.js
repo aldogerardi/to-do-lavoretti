@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "5.23";
+const APP_VERSION = "5.24";
 const KEYS = { lavori: "todo_lavori", articoli: "todo_articoli", movimenti: "todo_movimenti", impianti: "todo_impianti", coda: "todo_coda", impegni: "todo_impegni", catalogo: "todo_catalogo", preventivi: "todo_preventivi" };
 
 // ============ SINCRONIZZAZIONE FIREBASE (Firestore + Storage) ============
@@ -105,7 +105,7 @@ async function applicaAggiornamento() {
       await Promise.all(regs.map((r) => r.unregister()));
     }
   } catch (e) { console.error(e); }
-  location.reload();
+  location.href = location.pathname + "?agg=" + Date.now();
 }
 
 function getDeviceLabel() {

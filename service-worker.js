@@ -1,4 +1,4 @@
-const CACHE_NAME = "todo-app-v5-23";
+const CACHE_NAME = "todo-app-v5-24";
 const CORE_ASSETS = [
   "./",
   "./index.html",
@@ -35,16 +35,14 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(fetch(event.request, { cache: "no-store" }).catch(() => new Response("{}")));
     return;
   }
+  // prima la rete (dati sempre aggiornati); solo se offline usa l'ultima copia salvata
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const fetchPromise = fetch(event.request).then((response) => {
-        if (response && response.status === 200) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        }
-        return response;
-      }).catch(() => cached);
-      return cached || fetchPromise;
-    })
+    fetch(event.request).then((response) => {
+      if (response && response.status === 200) {
+        const clone = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+      }
+      return response;
+    }).catch(() => caches.match(event.request))
   );
 });
