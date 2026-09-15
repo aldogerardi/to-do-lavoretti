@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "5.19";
+const APP_VERSION = "5.22";
 const KEYS = { lavori: "todo_lavori", articoli: "todo_articoli", movimenti: "todo_movimenti", impianti: "todo_impianti", coda: "todo_coda", impegni: "todo_impegni", catalogo: "todo_catalogo", preventivi: "todo_preventivi" };
 
 // ============ SINCRONIZZAZIONE FIREBASE (Firestore + Storage) ============
@@ -79,6 +79,35 @@ function saveArr(key, arr) {
   });
 }
 
+// ============ CONTROLLO AGGIORNAMENTI ============
+// Legge version.json (pubblicato insieme al resto dei file) e lo confronta con la
+// versione caricata in questo momento: se sono diverse, mostra il banner in alto.
+async function controllaAggiornamento() {
+  try {
+    const res = await fetch("./version.json?_=" + Date.now(), { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data && data.version && data.version !== APP_VERSION && data.version !== state.aggiornamentoDisponibile) {
+      state.aggiornamentoDisponibile = data.version;
+      render();
+    }
+  } catch (e) { /* offline o rete assente: si riprova al giro successivo, nessun errore da mostrare */ }
+}
+
+async function applicaAggiornamento() {
+  try {
+    if ("caches" in window) {
+      const nomi = await caches.keys();
+      await Promise.all(nomi.map((n) => caches.delete(n)));
+    }
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+  } catch (e) { console.error(e); }
+  location.reload();
+}
+
 function getDeviceLabel() {
   let lbl = localStorage.getItem("todo_device_label");
   if (!lbl) {
@@ -100,7 +129,7 @@ const state = {
   lavori: [], articoli: [], movimenti: [], impianti: [], coda: [], impegni: [], catalogo: [], preventivi: [],
   // popolati in tempo reale da Firestore dopo il login, vedi avviaSincronizzazioneRealtime()
 
-  authUser: null, authLoading: true, authError: "", syncError: "",
+  authUser: null, authLoading: true, authError: "", syncError: "", aggiornamentoDisponibile: null,
 
   viewPreventivi: "lista", subPreventivi: "elenco", // elenco | catalogo
   queryCatalogo: "", formArticoloCatalogo: null,
@@ -158,20 +187,6 @@ function itToIso(itDate) {
 function normalizeHeader(h) {
   return (h || "").toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
 }
-const CSV_ALIASES = {
-  numeroIntervento: ["numero", "numerointervento", "nintervento", "n", "numint", "n"],
-  cliente: ["cliente", "nomecliente", "clientenome"],
-  descrizione: ["descrizione", "lavoro", "descrizionelavoro", "intervento"],
-  data: ["data", "dataintervento"],
-  telefono: ["telefono", "tel", "cellulare"],
-  importo: ["importo", "totale", "prezzo"],
-  statoPagamento: ["stato", "pagamento", "statopagamento"],
-  acconto: ["acconto"],
-  inGaranzia: ["garanzia", "ingaranzia"],
-  garanziaScadenza: ["scadenzagaranzia", "garanziascadenza", "datascadenzagaranzia"],
-  remoto: ["remoto", "daremoto"],
-  note: ["note", "nota"],
-};
 function parseCSV(text) {
   const lines = text.replace(/\r/g, "").split("\n").filter((l) => l.trim().length);
   if (!lines.length) return [];
@@ -195,136 +210,9 @@ function parseCSV(text) {
     return row;
   });
 }
-function csvGet(row, field) {
-  for (const alias of CSV_ALIASES[field]) {
-    if (row[alias] !== undefined && row[alias] !== "" && row[alias] !== null) return row[alias];
-  }
-  return "";
-}
-function isSiVero(v) { return ["si", "sì", "x", "1", "true", "vero"].includes(String(v || "").toLowerCase().trim()); }
-function anyDateToIso(v) {
-  if (!v) return "";
-  if (v instanceof Date && !isNaN(v)) {
-    const y = v.getFullYear(), m = String(v.getMonth() + 1).padStart(2, "0"), d = String(v.getDate()).padStart(2, "0");
-    return `${y}-${m}-${d}`;
-  }
-  const s = String(v).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  return itToIso(s);
-}
-function mapCsvRow(row) {
-  const remoto = isSiVero(csvGet(row, "remoto"));
-  const inGaranzia = isSiVero(csvGet(row, "inGaranzia"));
-  const senzaPagamento = remoto || inGaranzia;
-  const statoRaw = String(csvGet(row, "statoPagamento") || "").toLowerCase();
-  let stato = "da_pagare";
-  if (statoRaw.includes("pagat")) stato = "pagato";
-  else if (statoRaw.includes("acconto")) stato = "acconto";
-  return {
-    id: uid(),
-    numeroIntervento: String(csvGet(row, "numeroIntervento") || "").trim(),
-    cliente: String(csvGet(row, "cliente") || "").trim(),
-    telefono: String(csvGet(row, "telefono") || "").trim(),
-    descrizione: String(csvGet(row, "descrizione") || "").trim(),
-    data: anyDateToIso(csvGet(row, "data")) || oggi(),
-    remoto,
-    importo: senzaPagamento ? "" : String(csvGet(row, "importo") || ""),
-    statoPagamento: senzaPagamento ? "" : stato,
-    acconto: senzaPagamento ? "" : String(csvGet(row, "acconto") || ""),
-    materiali: [],
-    foto: [],
-    inGaranzia,
-    garanziaScadenza: inGaranzia ? anyDateToIso(csvGet(row, "garanziaScadenza")) : "",
-    note: String(csvGet(row, "note") || "").trim(),
-  };
-}
-function rinumeraLavoriPerAnno() {
-  if (!confirm("Rinumerare tutti i lavori, ricominciando da 001 per ogni anno? L'ordine cronologico resta invariato, cambiano solo i numeri.")) return;
-  const sorted = [...state.lavori].sort((a, b) => {
-    const ay = (a.data || "").slice(0, 4), by = (b.data || "").slice(0, 4);
-    if (ay !== by) return ay.localeCompare(by);
-    return (a.data || "").localeCompare(b.data || "");
-  });
-  const contatori = {};
-  sorted.forEach((j) => {
-    const anno = (j.data || "").slice(0, 4) || String(new Date().getFullYear());
-    contatori[anno] = (contatori[anno] || 0) + 1;
-    j.numeroIntervento = `${String(contatori[anno]).padStart(3, "0")}-${anno}`;
-  });
-  state.lavori = sorted.sort((a, b) => (b.data || "").localeCompare(a.data || ""));
-  saveArr(KEYS.lavori, state.lavori);
-  state.backupMsg = "Numerazione ricalcolata: un anno alla volta, da 001.";
-  render();
-  setTimeout(() => { state.backupMsg = ""; render(); }, 4000);
-}
-
-function importaRighe(rows) {
-  let importati = 0;
-  rows.forEach((row) => {
-    const job = mapCsvRow(row);
-    if (!job.cliente && !job.descrizione) return;
-    if (!job.numeroIntervento) job.numeroIntervento = prossimoNumeroIntervento(Number((job.data || "").slice(0, 4)) || undefined);
-    state.lavori.push(job);
-    importati++;
-  });
-  state.lavori.sort((a, b) => (b.data || "").localeCompare(a.data || ""));
-  saveArr(KEYS.lavori, state.lavori);
-  if (importati === 0) {
-    const msg = `Lette ${rows.length} righe ma nessuna aveva un cliente o una descrizione valorizzati.`;
-    state.backupMsg = msg;
-    alert(msg);
-  } else {
-    state.backupMsg = `Importati ${importati} interventi.`;
-  }
-  render();
-  setTimeout(() => { state.backupMsg = ""; render(); }, 4000);
-}
-function anyDateToItText(v) {
-  if (!v) return "";
-  if (v instanceof Date && !isNaN(v)) {
-    const y = v.getFullYear(), m = String(v.getMonth() + 1).padStart(2, "0"), d = String(v.getDate()).padStart(2, "0");
-    return `${d}/${m}/${y}`;
-  }
-  const s = String(v).trim();
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) return s;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return fmtData(s);
-  return s;
-}
-const CSV_ALIASES_IMPIANTO = {
-  numeroImpianto: ["numero", "numeroimpianto", "nimpianto", "n"],
-  dataImpianto: ["data", "dataimpianto"],
-  nome: ["nome", "cliente", "nomeimpianto"],
-  tipoCentrale: ["tipocentrale", "centrale", "tipo"],
-  numeroTelefonico: ["numerotelefonico", "telefono", "tel", "numerosim"],
-  note: ["note", "nota"],
-};
 function csvGetGeneric(row, aliases) {
   for (const alias of aliases) if (row[alias] !== undefined && row[alias] !== "" && row[alias] !== null) return row[alias];
   return "";
-}
-function mapCsvRowImpianto(row) {
-  return {
-    id: uid(),
-    numeroImpianto: String(csvGetGeneric(row, CSV_ALIASES_IMPIANTO.numeroImpianto) || "").trim(),
-    dataImpianto: anyDateToItText(csvGetGeneric(row, CSV_ALIASES_IMPIANTO.dataImpianto)) || fmtData(oggi()),
-    nome: String(csvGetGeneric(row, CSV_ALIASES_IMPIANTO.nome) || "").trim(),
-    tipoCentrale: String(csvGetGeneric(row, CSV_ALIASES_IMPIANTO.tipoCentrale) || "").trim(),
-    numeroTelefonico: String(csvGetGeneric(row, CSV_ALIASES_IMPIANTO.numeroTelefonico) || "").trim(),
-    note: String(csvGetGeneric(row, CSV_ALIASES_IMPIANTO.note) || "").trim(),
-  };
-}
-function importaRigheImpianti(rows) {
-  let importati = 0;
-  rows.forEach((row) => {
-    const imp = mapCsvRowImpianto(row);
-    if (!imp.nome) return;
-    state.impianti.push(imp);
-    importati++;
-  });
-  saveArr(KEYS.impianti, state.impianti);
-  state.backupMsg = `Importati ${importati} impianti.`;
-  render();
-  setTimeout(() => { state.backupMsg = ""; render(); }, 4000);
 }
 const CSV_ALIASES_CATALOGO = {
   codice: ["codice", "cod", "codicearticolo"],
@@ -417,39 +305,6 @@ function importaCatalogoFile(file) {
   reader.readAsText(file, "UTF-8");
 }
 
-function importaImpiantiFile(file) {
-  if (!file) return;
-  const ext = (file.name.split(".").pop() || "").toLowerCase();
-  if (ext === "xlsx" || ext === "xls") {
-    if (typeof XLSX === "undefined") { state.backupMsg = "Libreria Excel non disponibile offline al primo avvio: riprova con connessione attiva."; render(); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const wb = XLSX.read(reader.result, { type: "array", cellDates: true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const raw = XLSX.utils.sheet_to_json(ws, { defval: "" });
-        const rows = raw.map((obj) => {
-          const row = {};
-          Object.keys(obj).forEach((k) => { row[normalizeHeader(k)] = obj[k]; });
-          return row;
-        });
-        importaRigheImpianti(rows);
-      } catch (e) {
-        console.error(e);
-        state.backupMsg = "Errore nella lettura del file Excel.";
-        render();
-      }
-    };
-    reader.readAsArrayBuffer(file);
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = () => {
-    try { importaRigheImpianti(parseCSV(reader.result)); }
-    catch (e) { console.error(e); state.backupMsg = "Errore nella lettura del CSV."; render(); }
-  };
-  reader.readAsText(file, "UTF-8");
-}
 
 function apriPreview(tipo, p) {
   state.previewType = tipo;
@@ -715,17 +570,48 @@ function costruisciPdfPreventivo(p) {
   return doc;
 }
 
+async function urlAFotoDataUrl(url) {
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch (e) {
+    console.error("Impossibile scaricare la foto per il PDF:", e);
+    return "";
+  }
+}
+
+// Dopo la migrazione a Firebase le foto degli articoli sono link a Storage (https://...),
+// non più stringhe base64 — jsPDF.addImage() però richiede i dati dell'immagine, non un URL.
+// Qui le scarichiamo e le trasformiamo in base64 prima di costruire il PDF.
+async function risolviFotoPerPdf(p) {
+  const clone = JSON.parse(JSON.stringify(p));
+  const voci = clone.voci || [];
+  await Promise.all(voci.map(async (v) => {
+    if (v.foto && typeof v.foto === "string" && v.foto.indexOf("http") === 0) {
+      v.foto = await urlAFotoDataUrl(v.foto);
+    }
+  }));
+  return clone;
+}
+
 function nomeFilePdfPreventivo(p) {
   return `Preventivo_${(p.clienteNome || "cliente").replace(/[^a-z0-9]+/gi, "_")}_${p.numero || ""}.pdf`;
 }
 
-function generaPdfPreventivo(p) {
+async function generaPdfPreventivo(p) {
   if (typeof window.jspdf === "undefined") {
     alert("Libreria PDF non disponibile: assicurati di avere connessione internet e riprova.");
     return;
   }
-  const doc = costruisciPdfPreventivo(p);
-  doc.save(nomeFilePdfPreventivo(p));
+  const p2 = await risolviFotoPerPdf(p);
+  const doc = costruisciPdfPreventivo(p2);
+  doc.save(nomeFilePdfPreventivo(p2));
 }
 
 async function inviaPdfWhatsapp(p) {
@@ -733,8 +619,9 @@ async function inviaPdfWhatsapp(p) {
     alert("Libreria PDF non disponibile: assicurati di avere connessione internet e riprova.");
     return;
   }
-  const doc = costruisciPdfPreventivo(p);
-  const filename = nomeFilePdfPreventivo(p);
+  const p2 = await risolviFotoPerPdf(p);
+  const doc = costruisciPdfPreventivo(p2);
+  const filename = nomeFilePdfPreventivo(p2);
   const blob = doc.output("blob");
   const file = new File([blob], filename, { type: "application/pdf" });
 
@@ -747,13 +634,14 @@ async function inviaPdfWhatsapp(p) {
   doc.save(filename);
 }
 
-function inviaPdfEmail(p) {
+async function inviaPdfEmail(p) {
   if (typeof window.jspdf === "undefined") {
     alert("Libreria PDF non disponibile: assicurati di avere connessione internet e riprova.");
     return;
   }
-  const doc = costruisciPdfPreventivo(p);
-  const filename = nomeFilePdfPreventivo(p);
+  const p2 = await risolviFotoPerPdf(p);
+  const doc = costruisciPdfPreventivo(p2);
+  const filename = nomeFilePdfPreventivo(p2);
   const oggetto = `Preventivo — ${p.clienteNome || ""}`;
   const corpo = `Buongiorno,\n\nin allegato il preventivo${p.clienteNome ? " per " + p.clienteNome : ""}.\n\nRestando a disposizione per qualsiasi chiarimento, saluti.`;
   alert("Scarico il PDF e apro subito la mail: ricordati di allegarlo tu prima di inviare (la mail da sola non può farlo in automatico).");
@@ -762,59 +650,6 @@ function inviaPdfEmail(p) {
   window.location.href = link;
 }
 
-function importaCSV(file) {
-  if (!file) return;
-  const ext = (file.name.split(".").pop() || "").toLowerCase();
-  if (ext === "xlsx" || ext === "xls") {
-    if (typeof XLSX === "undefined") {
-      const msg = "Libreria Excel non disponibile: assicurati di avere connessione internet e riprova (la prima volta va scaricata).";
-      state.backupMsg = msg;
-      alert(msg);
-      render();
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const wb = XLSX.read(reader.result, { type: "array", cellDates: true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const raw = XLSX.utils.sheet_to_json(ws, { defval: "" });
-        const rows = raw.map((obj) => {
-          const row = {};
-          Object.keys(obj).forEach((k) => { row[normalizeHeader(k)] = obj[k]; });
-          return row;
-        });
-        if (rows.length === 0) {
-          const msg = "Il file sembra vuoto o senza intestazioni riconoscibili.";
-          state.backupMsg = msg;
-          alert(msg);
-          render();
-          return;
-        }
-        importaRighe(rows);
-      } catch (e) {
-        console.error(e);
-        const msg = "Errore nella lettura del file Excel: " + (e && e.message ? e.message : e);
-        state.backupMsg = msg;
-        alert(msg);
-        render();
-      }
-    };
-    reader.readAsArrayBuffer(file);
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      importaRighe(parseCSV(reader.result));
-    } catch (e) {
-      console.error(e);
-      state.backupMsg = "Errore nella lettura del CSV.";
-      render();
-    }
-  };
-  reader.readAsText(file, "UTF-8");
-}
 function euro(n) { const v = Number(n) || 0; return v.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function oggi() { return new Date().toISOString().slice(0, 10); }
 function garanziaAttiva(job) {
@@ -907,6 +742,7 @@ function render() {
   if (state.authLoading) { root.innerHTML = ""; return; }
   if (!state.authUser) { root.innerHTML = renderLogin(); return; }
   const parts = [
+    state.aggiornamentoDisponibile ? `<div class="update-banner"><span>Aggiornamento disponibile: v${APP_VERSION} &rarr; v${esc(state.aggiornamentoDisponibile)}</span><button data-action="applica-aggiornamento">Aggiorna ora</button></div>` : "",
     state.showSettings ? renderSettings() : "",
     state.showPreview ? renderPreviewOverlay() : "",
     `<div class="content sec-${{ lavori: "lavori", coda: "dafare", impegni: "impegni", magazzino: "magazzino", impianti: "impianti", cassa: "cassa", preventivi: "preventivi" }[state.tab] || "lavori"}">${renderTabContent()}</div>`,
@@ -965,13 +801,6 @@ function renderSettings() {
         <p style="font-size:10px;opacity:.55;margin:-4px 0 8px;line-height:1.4;">Il ripristino sostituisce tutti i dati e li carica su Firebase, visibili subito su tutti e 3 i dispositivi.</p>
         ${state.backupMsg ? `<p class="settings-msg" style="margin-top:4px;">${esc(state.backupMsg)}</p>` : ""}
 
-        <label class="field"><label style="margin:16px 0 4px;display:block;">Importa da Excel</label></label>
-        <p style="font-size:10px;opacity:.6;margin:0 0 8px;line-height:1.4;">Importa direttamente .xlsx o CSV. Colonne: numero, cliente, descrizione, data, telefono, importo, stato, acconto, garanzia, scadenza garanzia, remoto, note.</p>
-        <input type="file" id="importCsvInput" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" class="file-input" data-action="noop" />
-        <label class="btn-secondary" for="importCsvInput" data-action="noop" style="display:block;text-align:center;">Importa lavori da Excel/CSV</label>
-        <button class="btn-secondary" style="margin-top:8px;" data-action="rinumera-lavori">Rinumera lavori per anno (001, 002... per ogni anno)</button>
-        <input type="file" id="importImpiantiInput" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" class="file-input" data-action="noop" />
-        <label class="btn-secondary" for="importImpiantiInput" data-action="noop" style="display:block;text-align:center;">Importa impianti da Excel/CSV</label>
         <label class="field"><label style="margin:14px 0 4px;display:block;">Memoria</label></label>
         <p style="font-size:10px;opacity:.6;margin:0 0 8px;line-height:1.4;">Il telefono può, in rari casi, liberare spazio cancellando i dati dell'app. Chiedere memoria "persistente" riduce il rischio (fai comunque backup regolari).</p>
         <div id="storageStatus" class="mono" style="font-size:11px;margin-bottom:8px;">Verifica in corso...</div>
@@ -1967,8 +1796,8 @@ root.addEventListener("click", (e) => {
   if (action === "close-settings") { state.showSettings = false; render(); return; }
   if (action === "backup") { backupData(); return; }
   if (action === "check-persist") { verificaPersistenza(true); return; }
-  if (action === "rinumera-lavori") { rinumeraLavoriPerAnno(); return; }
   if (action === "logout") { if (confirm("Uscire da questo account su questo dispositivo?")) auth.signOut(); return; }
+  if (action === "applica-aggiornamento") { applicaAggiornamento(); return; }
 
   // LAVORI
   if (action === "new-lavoro") { state.formLavoro = {}; state.viewLavori = "form"; render(); return; }
@@ -2261,7 +2090,6 @@ root.addEventListener("change", (e) => {
   if (e.target.id === "remotoCheck") { togglePagamentoSection(); return; }
   if (e.target.id === "restoreInput") { restoreFromFile(e.target.files[0]); return; }
 
-  if (e.target.id === "importCsvInput") { importaCSV(e.target.files[0]); e.target.value = ""; return; }
   if (e.target.id === "importCatalogoInput") { importaCatalogoFile(e.target.files[0]); e.target.value = ""; return; }
   if (e.target.id === "fotoCatalogoInput") {
     const file = e.target.files[0];
@@ -2273,7 +2101,6 @@ root.addEventListener("change", (e) => {
     e.target.value = "";
     return;
   }
-  if (e.target.id === "importImpiantiInput") { importaImpiantiFile(e.target.files[0]); e.target.value = ""; return; }
   if (e.target.id === "fotoInput") {
     const file = e.target.files[0];
     if (!file) return;
@@ -2630,6 +2457,11 @@ auth.onAuthStateChanged((user) => {
 
 // initial render
 render();
+
+// controllo aggiornamenti: subito all'apertura, poi ogni 5 minuti e ogni volta che si torna sulla scheda
+setTimeout(controllaAggiornamento, 3000);
+setInterval(controllaAggiornamento, 5 * 60 * 1000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") controllaAggiornamento(); });
 
 root.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;

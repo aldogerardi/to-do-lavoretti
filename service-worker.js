@@ -1,4 +1,4 @@
-const CACHE_NAME = "todo-app-v5-19";
+const CACHE_NAME = "todo-app-v5-22";
 const CORE_ASSETS = [
   "./",
   "./index.html",
@@ -31,6 +31,10 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  if (event.request.url.includes("version.json")) {
+    event.respondWith(fetch(event.request, { cache: "no-store" }).catch(() => new Response("{}")));
+    return;
+  }
   event.respondWith(
     caches.match(event.request).then((cached) => {
       const fetchPromise = fetch(event.request).then((response) => {
