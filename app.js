@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "5.22";
+const APP_VERSION = "5.23";
 const KEYS = { lavori: "todo_lavori", articoli: "todo_articoli", movimenti: "todo_movimenti", impianti: "todo_impianti", coda: "todo_coda", impegni: "todo_impegni", catalogo: "todo_catalogo", preventivi: "todo_preventivi" };
 
 // ============ SINCRONIZZAZIONE FIREBASE (Firestore + Storage) ============
@@ -2433,15 +2433,19 @@ window.addEventListener("scroll", () => {
   const delta = y - lastScrollY;
   const nav = document.querySelector(".bottom-nav");
   const fab = document.querySelector(".fab");
+  const banner = document.querySelector(".update-banner");
   if (y < 40) {
     nav && nav.classList.remove("nav-hidden");
     fab && fab.classList.remove("nav-hidden");
+    banner && banner.classList.remove("nav-hidden");
   } else if (delta > 8) {
     nav && nav.classList.add("nav-hidden");
     fab && fab.classList.add("nav-hidden");
+    banner && banner.classList.add("nav-hidden");
   } else if (delta < -8) {
     nav && nav.classList.remove("nav-hidden");
     fab && fab.classList.remove("nav-hidden");
+    banner && banner.classList.remove("nav-hidden");
   }
   lastScrollY = y;
 }, { passive: true });
