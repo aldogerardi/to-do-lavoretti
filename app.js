@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "5.24";
+const APP_VERSION = "5.25";
 const KEYS = { lavori: "todo_lavori", articoli: "todo_articoli", movimenti: "todo_movimenti", impianti: "todo_impianti", coda: "todo_coda", impegni: "todo_impegni", catalogo: "todo_catalogo", preventivi: "todo_preventivi" };
 
 // ============ SINCRONIZZAZIONE FIREBASE (Firestore + Storage) ============
@@ -1259,6 +1259,7 @@ function renderImpiantiLista() {
       <div class="tag-top" style="margin-top:6px;align-items:center;">
         <p class="tag-date" style="margin:0;">${esc(i.dataImpianto)}</p>
         <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          ${i.lat && i.lng ? `<button class="edit-pencil" data-action="vai-impianto" data-lat="${i.lat}" data-lng="${i.lng}" aria-label="Vai col navigatore">&#129517;</button>` : ""}
           ${i.numeroImpianto ? `<span class="badge neutral mono" style="font-size:12px;">N&deg; ${esc(i.numeroImpianto)}</span>` : ""}
           <button class="edit-pencil" data-action="edit-impianto" data-id="${i.id}" aria-label="Modifica">&#9999;&#65039;</button>
         </div>
@@ -1327,6 +1328,17 @@ function renderImpiantoForm() {
         <datalist id="tipiCentraleList">${tipiEsistenti.map((t) => `<option value="${esc(t)}"></option>`).join("")}</datalist>
       </div>
       <div class="field"><label>Numero telefonico</label><input class="input" name="numeroTelefonico" value="${esc(f.numeroTelefonico)}" placeholder="Numero SIM / linea impianto" /></div>
+      <div class="field">
+        <label>Posizione per il navigatore</label>
+        ${f.lat && f.lng
+          ? `<p style="font-size:11px;opacity:.6;margin:0 0 8px;">&#128205; Posizione salvata.</p>
+             <div class="btn-row" style="margin-top:0;">
+               <button type="button" class="btn-primary" style="flex:1;" data-action="vai-impianto" data-lat="${f.lat}" data-lng="${f.lng}">&#129517; Vai (apri Maps)</button>
+               <button type="button" class="btn-secondary" style="flex:1;" data-action="salva-posizione-impianto">Aggiorna qui</button>
+             </div>`
+          : `<p style="font-size:11px;opacity:.6;margin:0 0 8px;line-height:1.4;">Nessun indirizzo da scrivere: la prossima volta che sei dal cliente premi questo tasto, salva il punto esatto in cui ti trovi e da allora "Vai" ti ci porta diretto col navigatore.</p>
+             <button type="button" class="btn-secondary" data-action="salva-posizione-impianto">&#128205; Salva posizione qui</button>`}
+      </div>
       <div class="field"><label>Note</label><textarea class="input" name="note" placeholder="Altre note...">${esc(f.note)}</textarea></div>
       ${f.id ? renderTabellaInterventiImpianto(f.id) : ""}
       <div class="btn-row">
@@ -1465,13 +1477,16 @@ function renderFormPreventivo() {
       <div class="field">
         <label>Voci del preventivo</label>
         <div class="add-row" style="position:relative;">
-          <input class="input" id="voceArticoloInput" autocomplete="off" placeholder="Cerca articolo dal catalogo..." style="flex:2;" />
+          <input class="input" id="voceArticoloInput" autocomplete="off" placeholder="Cerca nel catalogo o scrivi una voce libera..." style="flex:2;" />
           <input class="input" id="voceQtaInput" type="number" min="1" step="1" value="1" style="flex:0 0 55px;" />
           <div id="voceSuggestions" class="hidden" style="position:absolute;top:100%;left:0;right:65px;background:var(--card);border:2.5px solid var(--ink);border-radius:10px;box-shadow:4px 4px 0 var(--ink);z-index:30;max-height:220px;overflow-y:auto;margin-top:4px;"></div>
         </div>
-        <p style="font-size:11px;opacity:.5;margin:2px 0 8px;">Se il nome corrisponde a un prodotto del catalogo, lo riconosce (icona &#128230;) e prende il costo per il calcolo qui sotto.</p>
+        <p style="font-size:11px;opacity:.5;margin:2px 0 8px;">Se il nome corrisponde a un prodotto del catalogo, lo riconosce (icona &#128230;) e prende il costo per il calcolo qui sotto. Altrimenti resta una voce libera — utile per far vedere al cliente il tempo speso (es. "Collegamento apparati già presenti").</p>
         <input class="input" id="voceUbicazioneInput" placeholder="Così ubicati (facoltativo, es. Ingresso, Garage)" style="margin-bottom:8px;" />
-        <button type="button" class="btn-secondary" data-action="add-voce-preventivo">Aggiungi voce</button>
+        <div class="btn-row" style="margin-top:0;">
+          <button type="button" class="btn-secondary" style="flex:1;" data-action="add-voce-preventivo">Aggiungi voce</button>
+          <button type="button" class="btn-secondary" style="flex:1;" data-action="add-voce-libera">&#9998;&#65039; Voce libera</button>
+        </div>
         ${voci.some((v) => v.separatore) ? "" : `<button type="button" class="btn-secondary" style="margin-top:6px;" data-action="add-separatore-preventivo">&#8942; Inserisci riga di stop (aggiunte facoltative)</button>`}
         <div id="vociList">${renderVociListHtml(voci)}</div>
         <div id="costoVociBox" style="margin-top:10px;background:var(--paper);border:2px solid var(--ink);border-radius:10px;padding:10px 13px;display:flex;justify-content:space-between;align-items:center;">
@@ -1875,6 +1890,15 @@ root.addEventListener("click", (e) => {
     refreshVociList();
     return;
   }
+  if (action === "add-voce-libera") {
+    const nome = prompt('Descrizione della voce libera (es. "Collegamento apparati già presenti"):');
+    if (!nome || !nome.trim()) return;
+    state.formPreventivo.voci = [...(state.formPreventivo.voci || []), {
+      nome: nome.trim(), quantita: 1, ubicazione: "", foto: "", descrizione: "", libera: true,
+    }];
+    refreshVociList();
+    return;
+  }
   if (action === "add-separatore-preventivo") {
     const vociAttuali = state.formPreventivo.voci || [];
     if (vociAttuali.some((v) => v.separatore)) return;
@@ -2038,6 +2062,21 @@ root.addEventListener("click", (e) => {
   if (action === "new-impianto") { state.formImpianto = {}; state.viewImpianti = "form"; render(); return; }
   if (action === "back-impianti") { state.viewImpianti = "lista"; render(); return; }
   if (action === "edit-impianto") { state.formImpianto = { ...state.impianti.find((i) => i.id === el.dataset.id) }; state.viewImpianti = "form"; render(); return; }
+  if (action === "vai-impianto") {
+    const lat = el.dataset.lat, lng = el.dataset.lng;
+    if (lat && lng) window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`, "_blank");
+    return;
+  }
+  if (action === "salva-posizione-impianto") {
+    if (!navigator.geolocation) { alert("Il dispositivo non supporta la geolocalizzazione."); return; }
+    navigator.geolocation.getCurrentPosition((pos) => {
+      state.formImpianto = { ...state.formImpianto, lat: pos.coords.latitude, lng: pos.coords.longitude };
+      render();
+    }, (err) => {
+      alert("Impossibile ottenere la posizione: " + err.message + " (controlla i permessi di localizzazione).");
+    }, { enableHighAccuracy: true, timeout: 10000 });
+    return;
+  }
   if (action === "delete-impianto") { state.impianti = state.impianti.filter((i) => i.id !== el.dataset.id); saveArr(KEYS.impianti, state.impianti); state.viewImpianti = "lista"; render(); return; }
 
   // CASSA
@@ -2340,6 +2379,8 @@ root.addEventListener("submit", (e) => {
       tipoCentrale: (fd.get("tipoCentrale") || "").trim(),
       numeroTelefonico: (fd.get("numeroTelefonico") || "").trim(),
       note: (fd.get("note") || "").trim(),
+      lat: prev.lat || null,
+      lng: prev.lng || null,
     };
     if (!impianto.nome) return;
     const idx = state.impianti.findIndex((i) => i.id === impianto.id);
