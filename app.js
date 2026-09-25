@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "5.25";
+const APP_VERSION = "5.26";
 const KEYS = { lavori: "todo_lavori", articoli: "todo_articoli", movimenti: "todo_movimenti", impianti: "todo_impianti", coda: "todo_coda", impegni: "todo_impegni", catalogo: "todo_catalogo", preventivi: "todo_preventivi" };
 
 // ============ SINCRONIZZAZIONE FIREBASE (Firestore + Storage) ============
@@ -73,6 +73,22 @@ async function pushToFirestore(coll, arr) {
 function saveArr(key, arr) {
   segnaUltimaModifica();
   pushToFirestore(key, arr).catch((err) => {
+    console.error(err);
+    state.syncError = "Sincronizzazione non riuscita: " + err.message;
+    render();
+  });
+}
+
+// Incremento atomico lato server per la quantità di un articolo a magazzino.
+// A differenza di saveArr (che riscrive l'intero documento con il valore calcolato in locale),
+// questo chiede a Firestore di sommare/sottrarre direttamente sul valore che ha davvero in quel momento.
+// Serve a evitare che due dispositivi che registrano un carico/scarico vicini nel tempo, prima che
+// ciascuno abbia ricevuto l'aggiornamento dell'altro, si "mangino" a vicenda una quantità.
+function incrementaQuantitaArticolo(articoloId, delta, extraFields) {
+  segnaUltimaModifica();
+  const update = { quantita: firebase.firestore.FieldValue.increment(delta) };
+  if (extraFields) Object.assign(update, extraFields);
+  db.collection(KEYS.articoli).doc(String(articoloId)).update(update).catch((err) => {
     console.error(err);
     state.syncError = "Sincronizzazione non riuscita: " + err.message;
     render();
@@ -1126,12 +1142,13 @@ function renderArticoloForm() {
       <div class="field">
         <label>Storico acquisti</label>
         <div class="chip-row" style="flex-direction:column;align-items:stretch;gap:6px;">
-          ${f.storicoCarichi.slice().reverse().map((c) => `
+          ${f.storicoCarichi.map((c, idx) => ({ c, idx })).reverse().map(({ c, idx }) => `
             <div class="movement-row" style="margin-bottom:0;">
               <div class="grow">
                 <p class="desc">${esc(c.quantita)} pz &middot; &euro;${euro(c.costoUnitario)}/pz${c.fornitore ? " &middot; " + esc(c.fornitore) : ""}</p>
                 <p class="meta">${esc(c.data)}</p>
               </div>
+              <button type="button" class="del" data-action="rm-carico" data-idx="${idx}" title="Cancella questo carico">&#10005;</button>
             </div>`).join("")}
         </div>
       </div>` : ""}
@@ -2015,8 +2032,8 @@ root.addEventListener("click", (e) => {
     const articolo = state.articoli.find((a) => a.nome.toLowerCase() === nome.toLowerCase());
     let articoloId = null;
     if (articolo) {
-      articolo.quantita = (Number(articolo.quantita) || 0) - quantita;
-      saveArr(KEYS.articoli, state.articoli);
+      incrementaQuantitaArticolo(articolo.id, -quantita);
+      articolo.quantita = (Number(articolo.quantita) || 0) - quantita; // copia locale, poi confermata da Firestore
       articoloId = articolo.id;
     }
     state.formLavoro.materiali = [...(state.formLavoro.materiali || []), { nome, quantita, articoloId }];
@@ -2031,7 +2048,10 @@ root.addEventListener("click", (e) => {
     const entry = state.formLavoro.materiali[idx];
     if (entry && typeof entry === "object" && entry.articoloId) {
       const articolo = state.articoli.find((a) => a.id === entry.articoloId);
-      if (articolo) { articolo.quantita = (Number(articolo.quantita) || 0) + entry.quantita; saveArr(KEYS.articoli, state.articoli); }
+      if (articolo) {
+        incrementaQuantitaArticolo(articolo.id, entry.quantita);
+        articolo.quantita = (Number(articolo.quantita) || 0) + entry.quantita; // copia locale, poi confermata da Firestore
+      }
     }
     state.formLavoro.materiali.splice(idx, 1);
     refreshMaterialiChips();
@@ -2048,6 +2068,34 @@ root.addEventListener("click", (e) => {
   if (action === "new-articolo") { state.formArticolo = {}; state.isCorrezione = false; state.viewMagazzino = "form"; render(); return; }
   if (action === "back-magazzino") { state.viewMagazzino = "lista"; render(); return; }
   if (action === "edit-articolo") { state.formArticolo = { ...state.articoli.find((a) => a.id === el.dataset.id) }; state.isCorrezione = true; state.viewMagazzino = "form"; render(); return; }
+  if (action === "rm-carico") {
+    const idx = Number(el.dataset.idx);
+    const carico = (state.formArticolo.storicoCarichi || [])[idx];
+    if (!carico) return;
+    if (!confirm(`Cancellare il carico di ${carico.quantita} pz del ${carico.data}? La quantità in magazzino verrà scalata di conseguenza.`)) return;
+    const articoloId = state.formArticolo.id;
+    const dataIso = itToIso(carico.data);
+    const importoAtteso = (Number(carico.quantita) || 0) * (Number(carico.costoUnitario) || 0);
+    const corrispondenti = state.movimenti.filter((m) => m.origine === "magazzino" && m.articoloId === articoloId && m.data === dataIso && Math.abs((Number(m.importo) || 0) - importoAtteso) < 0.01);
+    if (corrispondenti.length === 1) {
+      state.movimenti = state.movimenti.filter((m) => m.id !== corrispondenti[0].id);
+      saveArr(KEYS.movimenti, state.movimenti);
+    } else if (corrispondenti.length > 1) {
+      alert("Trovati più movimenti in Cassa che corrispondono: nessuno cancellato in automatico, rimuovilo a mano da Cassa se serve.");
+    } else {
+      alert("Nessun movimento in Cassa trovato che corrisponda: se c'è, rimuovilo a mano.");
+    }
+    incrementaQuantitaArticolo(articoloId, -(Number(carico.quantita) || 0), { storicoCarichi: firebase.firestore.FieldValue.arrayRemove(carico) });
+    state.formArticolo.storicoCarichi = state.formArticolo.storicoCarichi.filter((_, i) => i !== idx);
+    state.formArticolo.quantita = (Number(state.formArticolo.quantita) || 0) - (Number(carico.quantita) || 0);
+    const articoloReale = state.articoli.find((a) => a.id === articoloId);
+    if (articoloReale) {
+      articoloReale.storicoCarichi = (articoloReale.storicoCarichi || []).filter((c) => c !== carico);
+      articoloReale.quantita = (Number(articoloReale.quantita) || 0) - (Number(carico.quantita) || 0);
+    }
+    render();
+    return;
+  }
   if (action === "delete-articolo") {
     state.articoli = state.articoli.filter((a) => a.id !== el.dataset.id);
     saveArr(KEYS.articoli, state.articoli);
@@ -2344,19 +2392,25 @@ root.addEventListener("submit", (e) => {
     } else {
       const esistente = state.articoli.find((a) => a.nome.toLowerCase() === nome.toLowerCase());
       let articoloId;
-      const nuovoCarico = { data: dataUltimoCarico, quantita, costoUnitario, fornitore };
+      const nuovoCarico = { id: uid(), data: dataUltimoCarico, quantita, costoUnitario, fornitore };
       if (esistente) {
+        articoloId = esistente.id;
+        // Somma atomica sul server: non parte dalla quantità che ha in memoria questo dispositivo.
+        incrementaQuantitaArticolo(articoloId, quantita, {
+          costoUnitario, fornitore, dataUltimoCarico,
+          storicoCarichi: firebase.firestore.FieldValue.arrayUnion(nuovoCarico),
+        });
+        // Copia locale aggiornata subito per l'interfaccia, verrà confermata/corretta da Firestore a momenti.
         esistente.quantita = (Number(esistente.quantita) || 0) + quantita;
         esistente.costoUnitario = costoUnitario;
         esistente.fornitore = fornitore;
         esistente.dataUltimoCarico = dataUltimoCarico;
         esistente.storicoCarichi = [...(esistente.storicoCarichi || []), nuovoCarico];
-        articoloId = esistente.id;
       } else {
         articoloId = uid();
         state.articoli.push({ id: articoloId, nome, quantita, costoUnitario, fornitore, dataUltimoCarico, storicoCarichi: [nuovoCarico] });
+        saveArr(KEYS.articoli, state.articoli);
       }
-      saveArr(KEYS.articoli, state.articoli);
       state.movimenti.unshift({
         id: uid(), tipo: "uscita", origine: "magazzino", articoloId, data: itToIso(dataUltimoCarico) || oggi(),
         descrizione: `Acquisto ${quantita} × ${nome}${fornitore ? " da " + fornitore : ""}`,
