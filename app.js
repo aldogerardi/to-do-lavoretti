@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "5.26";
+const APP_VERSION = "5.28";
 const KEYS = { lavori: "todo_lavori", articoli: "todo_articoli", movimenti: "todo_movimenti", impianti: "todo_impianti", coda: "todo_coda", impegni: "todo_impegni", catalogo: "todo_catalogo", preventivi: "todo_preventivi" };
 
 // ============ SINCRONIZZAZIONE FIREBASE (Firestore + Storage) ============
@@ -1130,7 +1130,7 @@ function renderArticoloForm() {
     ${!corr ? `<p style="font-size:12px;opacity:.6;margin-bottom:16px;">Registra un acquisto: se l'articolo esiste già, la quantità si somma a quella in magazzino. La spesa viene aggiunta automaticamente in Cassa.</p>` : ""}
     <form id="formArticolo">
       <div class="field"><label>Data ${corr ? "ultimo carico" : "acquisto"}</label><input class="input date-it" name="dataUltimoCarico" value="${esc(f.dataUltimoCarico) || fmtData(oggi())}" placeholder="gg/mm/aaaa" inputmode="numeric" maxlength="10" /></div>
-      <div class="field"><label>Articolo *</label><input class="input" name="nome" list="nomiList" value="${esc(f.nome)}" placeholder="Es. sensore volumetrico" ${corr ? "disabled" : ""} required />
+      <div class="field"><label>Articolo *</label><input class="input" name="nome" list="nomiList" value="${esc(f.nome)}" placeholder="Es. sensore volumetrico" ${corr ? "readonly" : ""} required />
         <datalist id="nomiList">${nomiEsistenti.map((n) => `<option value="${esc(n)}"></option>`).join("")}</datalist>
       </div>
       <div class="field"><label>${corr ? "Quantità in magazzino" : "Quantità acquistata *"}</label><input type="number" step="0.01" class="input" name="quantita" value="${esc(f.quantita)}" placeholder="0" required /></div>
@@ -2069,10 +2069,12 @@ root.addEventListener("click", (e) => {
   if (action === "back-magazzino") { state.viewMagazzino = "lista"; render(); return; }
   if (action === "edit-articolo") { state.formArticolo = { ...state.articoli.find((a) => a.id === el.dataset.id) }; state.isCorrezione = true; state.viewMagazzino = "form"; render(); return; }
   if (action === "rm-carico") {
+    if (el.disabled) return;
     const idx = Number(el.dataset.idx);
     const carico = (state.formArticolo.storicoCarichi || [])[idx];
     if (!carico) return;
-    if (!confirm(`Cancellare il carico di ${carico.quantita} pz del ${carico.data}? La quantità in magazzino verrà scalata di conseguenza.`)) return;
+    el.disabled = true; // evita che un doppio tocco scali la quantità due volte
+    if (!confirm(`Cancellare il carico di ${carico.quantita} pz del ${carico.data}? La quantità in magazzino verrà scalata di conseguenza.`)) { el.disabled = false; return; }
     const articoloId = state.formArticolo.id;
     const dataIso = itToIso(carico.data);
     const importoAtteso = (Number(carico.quantita) || 0) * (Number(carico.costoUnitario) || 0);
