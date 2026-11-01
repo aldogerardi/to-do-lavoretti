@@ -2,7 +2,7 @@
   "name": "TO-DO",
   "short_name": "TO-DO",
   "description": "Registro lavoretti, magazzino, impianti e cassa",
-  "start_url": "./index.html?tab=coda",
+  "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",

@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "5.28";
+const APP_VERSION = "6.02";
 const KEYS = { lavori: "todo_lavori", articoli: "todo_articoli", movimenti: "todo_movimenti", impianti: "todo_impianti", coda: "todo_coda", impegni: "todo_impegni", catalogo: "todo_catalogo", preventivi: "todo_preventivi" };
 
 // ============ SINCRONIZZAZIONE FIREBASE (Firestore + Storage) ============
@@ -140,7 +140,7 @@ const state = {
   tab: (() => {
     const params = new URLSearchParams(location.search);
     const t = params.get("tab");
-    return ["lavori", "coda", "magazzino", "impianti", "cassa", "impegni", "preventivi"].includes(t) ? t : "lavori";
+    return ["home", "lavori", "coda", "magazzino", "impianti", "cassa", "impegni", "preventivi"].includes(t) ? t : "home";
   })(),
   lavori: [], articoli: [], movimenti: [], impianti: [], coda: [], impegni: [], catalogo: [], preventivi: [],
   // popolati in tempo reale da Firestore dopo il login, vedi avviaSincronizzazioneRealtime()
@@ -168,7 +168,7 @@ const state = {
   viewCassa: "lista",
   formMovimento: null,
 
-  showSettings: false,
+  showSettings: false, showAddMenu: false, showNavMenu: false,
   backupMsg: "",
   restoring: false,
 };
@@ -761,7 +761,9 @@ function render() {
     state.aggiornamentoDisponibile ? `<div class="update-banner"><span>Aggiornamento disponibile: v${APP_VERSION} &rarr; v${esc(state.aggiornamentoDisponibile)}</span><button data-action="applica-aggiornamento">Aggiorna ora</button></div>` : "",
     state.showSettings ? renderSettings() : "",
     state.showPreview ? renderPreviewOverlay() : "",
-    `<div class="content sec-${{ lavori: "lavori", coda: "dafare", impegni: "impegni", magazzino: "magazzino", impianti: "impianti", cassa: "cassa", preventivi: "preventivi" }[state.tab] || "lavori"}">${renderTabContent()}</div>`,
+    state.showAddMenu ? renderAddMenu() : "",
+    state.showNavMenu ? renderNavMenu() : "",
+    `<div class="content sec-${{ home: "home", lavori: "lavori", coda: "dafare", impegni: "impegni", magazzino: "magazzino", impianti: "impianti", cassa: "cassa", preventivi: "preventivi" }[state.tab] || "lavori"}">${renderTabContent()}</div>`,
     renderBottomNav(),
   ];
   root.innerHTML = `<div class="app">${parts.join("")}</div>`;
@@ -780,7 +782,7 @@ function renderTopbar() {
   return `
     <div class="header-brand">
       <div class="header-brand-top">
-        <span class="brand-name">TO-DO</span>
+        <span class="brand-left"><button class="home-btn" data-action="go-home" aria-label="Home">&#8962;</button><span class="brand-name">TO-DO</span></span>
         <button class="gear" data-action="open-settings" aria-label="Impostazioni">
           &#9881;&#65039;${state.syncError ? `<span class="backup-dot" title="${esc(state.syncError)}"></span>` : backupInRitardo() ? `<span class="backup-dot"></span>` : ""}
         </button>
@@ -826,11 +828,38 @@ function renderSettings() {
 }
 
 function renderBottomNav() {
-  const tabs = [["coda", "&#128203;", "Da fare"], ["impegni", "&#128197;", "Impegni"], ["lavori", "&#128295;", "Lavori"], ["impianti", "&#128680;", "Impianti"], ["preventivi", "&#128221;", "Prevent."], ["magazzino", "&#128230;", "Magazzino"], ["cassa", "&#128176;", "Cassa"]];
+  if (state.tab === "home") return "";
+  const tabs = [["lavori", "&#128295;", "Lavori"], ["preventivi", "&#128221;", "Preventivi"], ["magazzino", "&#128230;", "Magazzino"]];
+  const inMenu = ["coda", "impegni", "impianti", "cassa"].includes(state.tab);
   return `<nav class="bottom-nav">${tabs.map(([key, ico, label]) => `
     <button class="nav-btn ${state.tab === key ? "active" : ""}" data-action="set-tab" data-tab="${key}">
       <span class="ico">${ico}</span>${label}
-    </button>`).join("")}</nav>`;
+    </button>`).join("")}
+    <button class="nav-btn ${inMenu ? "active" : ""}" data-action="open-nav-menu">
+      <span class="ico">&#9776;</span>Men&ugrave;
+    </button></nav>`;
+}
+
+function renderNavMenu() {
+  const voci = [
+    ["home", "&#127968;", "Home", "Torna ai riquadri"],
+    ["coda", "&#128203;", "Da fare", state.coda.length ? state.coda.length + (state.coda.length === 1 ? " lavoro in coda" : " lavori in coda") : "Niente in coda"],
+    ["impegni", "&#128197;", "Impegni", "Agenda e appuntamenti"],
+    ["impianti", "&#128680;", "Impianti", "Impianti registrati"],
+    ["cassa", "&#128176;", "Cassa", "Entrate, uscite e saldo"],
+    ["settings", "&#9881;&#65039;", "Impostazioni", "Account, backup, memoria"],
+  ];
+  return `
+    <div class="overlay" data-action="close-nav-menu">
+      <div class="sheet add-sheet" data-stop data-action="noop">
+        <div class="sheet-head"><h3>Men&ugrave;</h3><button class="sheet-close" data-action="close-nav-menu">&#10005;</button></div>
+        ${voci.map(([k, ico, titolo, sub]) => `
+          <button class="add-item ${state.tab === k ? "add-item-current" : ""}" data-action="nav-pick" data-go="${k}">
+            <span class="add-ico">${ico}</span>
+            <span class="add-txt"><b>${titolo}</b><small>${esc(sub)}</small></span>
+          </button>`).join("")}
+      </div>
+    </div>`;
 }
 
 function inviaReportCodaWhatsapp() {
@@ -853,6 +882,7 @@ function inviaImpegnoWhatsapp(impegno) {
 }
 
 function renderTabContent() {
+  if (state.tab === "home") return renderHome();
   if (state.tab === "lavori") return renderLavori();
   if (state.tab === "coda") return renderCoda();
   if (state.tab === "impegni") return renderImpegni();
@@ -861,6 +891,98 @@ function renderTabContent() {
   if (state.tab === "cassa") return renderCassa();
   if (state.tab === "preventivi") return renderPreventiviTab();
   return "";
+}
+
+// ============ HOME (riquadri) ============
+function batterieQuantita(ah) {
+  // somma le giacenze degli articoli il cui nome contiene la capacità (es. "12V 7Ah", "batteria 7ah")
+  const re = new RegExp("(^|[^0-9.,])" + ah + "ah");
+  return state.articoli
+    .filter((a) => re.test(String(a.nome || "").toLowerCase().replace(/\s+/g, "")))
+    .reduce((sum, a) => sum + (Number(a.quantita) || 0), 0);
+}
+
+function renderHome() {
+  const oggiIso = oggi();
+  const tra7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const nome = "Aldo";
+  const dataLunga = new Date().toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long" });
+  const dataCap = dataLunga.charAt(0).toUpperCase() + dataLunga.slice(1);
+
+  const primiDaFare = state.coda.slice(0, 3);
+
+  const bat7 = batterieQuantita(7);
+  const bat2 = batterieQuantita(2);
+
+  const saldoTotale = calcEntrateLavori() + calcEntrateManuali() - calcUsciteTotali();
+
+  const impegniSettimana = state.impegni.filter((i) => (i.data || "") >= oggiIso && (i.data || "") <= tra7).length;
+  const ultimi = [...state.lavori].sort((a, b) => ordinaPerNumeroDesc(a, b, a.numeroIntervento, b.numeroIntervento)).slice(0, 3);
+
+  const tile = (tab, cls, label, num, numCls) => `
+    <button class="tile tile-compact ${cls}" data-action="set-tab" data-tab="${tab}">
+      <span class="tile-label">${label}</span>
+      <span class="tile-num ${numCls || ""}">${num}</span>
+    </button>`;
+
+  const batBox = (label, q) => `
+    <span class="bat-box ${q <= 0 ? "zero" : ""}">
+      <span class="bat-name">${label}</span>
+      <span class="bat-qty">${q}<small> pz</small></span>
+    </span>`;
+
+  return `
+    <div class="home-top">
+      <div>
+        <p class="home-date">${esc(dataCap)}</p>
+        <h1 class="home-hello">Ciao ${nome}</h1>
+      </div>
+      <button class="gear home-gear" data-action="open-settings" aria-label="Impostazioni">&#9881;&#65039;${state.syncError ? `<span class="backup-dot" title="${esc(state.syncError)}"></span>` : backupInRitardo() ? `<span class="backup-dot"></span>` : ""}</button>
+    </div>
+    <div class="tiles">
+      <button class="tile tile-hero tile-dafare" data-action="set-tab" data-tab="coda">
+        <span class="tile-label">Da fare</span>
+        <span class="ult-list">${primiDaFare.length ? primiDaFare.map((c) => `
+          <span class="ult-row"><span class="ult-main"><b>${esc(c.cliente)}</b></span></span>`).join("") : `<span class="tile-sub">Niente in coda</span>`}</span>
+      </button>
+      <button class="tile tile-wide tile-magazzino" data-action="set-tab" data-tab="magazzino">
+        <span class="tile-label">Batterie 12V in magazzino</span>
+        <span class="bat-row">${batBox("7 Ah", bat7)}${batBox("2 Ah", bat2)}</span>
+      </button>
+      ${tile("cassa", "tile-cassa", "Cassa", (saldoTotale < 0 ? "&minus;" : "") + "&euro;" + euro(Math.abs(saldoTotale)), "tile-num-md")}
+      ${tile("impegni", "tile-impegni", "Impegni", impegniSettimana)}
+      ${tile("impianti", "tile-impianti", "Impianti", state.impianti.length)}
+      ${tile("preventivi", "tile-preventivi", "Preventivi", state.preventivi.length)}
+      <button class="tile tile-wide tile-lavori" data-action="set-tab" data-tab="lavori">
+        <span class="tile-label">Ultimi interventi</span>
+        <span class="ult-list">${ultimi.length ? ultimi.map((j) => `
+          <span class="ult-row"><span class="ult-main"><b>${esc(j.cliente)}</b></span><span class="ult-date">${j.data ? esc(fmtData(j.data)) : ""}</span></span>`).join("") : `<span class="tile-sub">Nessun intervento registrato</span>`}</span>
+      </button>
+    </div>
+    <p class="home-foot">v.${APP_VERSION} &middot; Claude AI x Aldo${fmtUltimaModifica() ? "<br>" + fmtUltimaModifica() : ""}</p>
+    <button class="add-bar" data-action="open-add-menu"><span>Aggiungi qualcosa</span><span class="add-plus">+</span></button>`;
+}
+
+function renderAddMenu() {
+  const voci = [
+    ["lavoro", "&#128295;", "Lavoro", "Un lavoretto fatto o da fare"],
+    ["articolo", "&#128230;", "Carico magazzino", "Acquisto o nuovo articolo"],
+    ["movimento", "&#128176;", "Movimento di cassa", "Entrata o uscita"],
+    ["impegno", "&#128197;", "Impegno", "Appuntamento in agenda"],
+    ["impianto", "&#128680;", "Impianto", "Nuovo impianto da registrare"],
+  ];
+  if (!localStorage.getItem("todo_preventivi_sola_lettura")) voci.push(["preventivo", "&#128221;", "Preventivo", "Nuovo preventivo"]);
+  return `
+    <div class="overlay" data-action="close-add-menu">
+      <div class="sheet add-sheet" data-stop data-action="noop">
+        <div class="sheet-head"><h3>Cosa vuoi aggiungere?</h3><button class="sheet-close" data-action="close-add-menu">&#10005;</button></div>
+        ${voci.map(([k, ico, titolo, sub]) => `
+          <button class="add-item" data-action="add-pick" data-kind="${k}">
+            <span class="add-ico">${ico}</span>
+            <span class="add-txt"><b>${titolo}</b><small>${sub}</small></span>
+          </button>`).join("")}
+      </div>
+    </div>`;
 }
 
 // ============ DA FARE (coda) ============
@@ -1818,12 +1940,44 @@ function restoreFromFile(file) {
 root.addEventListener("click", (e) => {
   const el = e.target.closest("[data-action]");
   if (!el) {
-    if (e.target.closest(".overlay") && !e.target.closest("[data-stop]")) { state.showSettings = false; render(); }
+    if (e.target.closest(".overlay") && !e.target.closest("[data-stop]")) { state.showSettings = false; state.showAddMenu = false; state.showNavMenu = false; render(); }
     return;
   }
   const action = el.dataset.action;
 
-  if (action === "set-tab") { state.tab = el.dataset.tab; render(); return; }
+  if (action === "set-tab") { state.tab = el.dataset.tab; window.scrollTo(0, 0); render(); return; }
+  if (action === "go-home") { state.tab = "home"; window.scrollTo(0, 0); render(); return; }
+  if (action === "open-nav-menu") { state.showNavMenu = true; render(); return; }
+  if (action === "close-nav-menu") { state.showNavMenu = false; render(); return; }
+  if (action === "nav-pick") {
+    const go = el.dataset.go;
+    state.showNavMenu = false;
+    if (go === "settings") { state.showSettings = true; render(); verificaPersistenza(false); return; }
+    state.tab = go;
+    window.scrollTo(0, 0);
+    render();
+    return;
+  }
+  if (action === "open-add-menu") { state.showAddMenu = true; render(); return; }
+  if (action === "close-add-menu") { state.showAddMenu = false; render(); return; }
+  if (action === "add-pick") {
+    const k = el.dataset.kind;
+    state.showAddMenu = false;
+    if (k === "lavoro") { state.tab = "lavori"; state.formLavoro = {}; state.viewLavori = "form"; }
+    else if (k === "articolo") { state.tab = "magazzino"; state.formArticolo = {}; state.isCorrezione = false; state.viewMagazzino = "form"; }
+    else if (k === "movimento") { state.tab = "cassa"; state.formMovimento = { tipo: "uscita" }; state.viewCassa = "form"; }
+    else if (k === "impegno") { state.tab = "impegni"; state.formImpegno = {}; state.viewImpegni = "form"; }
+    else if (k === "impianto") { state.tab = "impianti"; state.formImpianto = {}; state.viewImpianti = "form"; }
+    else if (k === "preventivo") {
+      state.tab = "preventivi";
+      const tmpl = localStorage.getItem("todo_preventivo_template") || "";
+      state.formPreventivo = { numero: prossimoNumeroPreventivo(), testoIntro: tmpl, voci: [] };
+      state.viewPreventivi = "formPreventivo";
+    }
+    window.scrollTo(0, 0);
+    render();
+    return;
+  }
   if (action === "open-settings") { state.showSettings = true; render(); verificaPersistenza(false); return; }
   if (action === "close-settings") { state.showSettings = false; render(); return; }
   if (action === "backup") { backupData(); return; }
